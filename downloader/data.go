@@ -5,24 +5,29 @@ import (
 	"sync"
 )
 
-type Data struct {
+type data struct {
 	data [][]byte
 	mu   sync.Mutex
 }
 
-func newData(count int) *Data {
-	return &Data{
+type partialData struct {
+	data  []byte
+	index int
+}
+
+func newData(count int) *data {
+	return &data{
 		data: make([][]byte, count),
 	}
 }
 
-func (d *Data) setPartialData(index int, p []byte) {
+func (d *data) setPartialData(p *partialData) {
 	d.mu.Lock()
-	d.data[index] = p
+	d.data[p.index] = p.data
 	d.mu.Unlock()
 }
 
-func (d *Data) write(filename string) error {
+func (d *data) write(filename string) error {
 	var sum []byte
 	for _, p := range d.data {
 		sum = append(sum, p...)

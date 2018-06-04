@@ -1,6 +1,7 @@
 package downloader
 
 import (
+	"context"
 	"errors"
 	"io/ioutil"
 	"net/http"
@@ -25,7 +26,7 @@ func (d *Downloader) Start() error {
 	unit := int(size) / numCPU
 
 	data := newData(numCPU)
-	var eg errgroup.Group
+	eg, ctx := errgroup.WithContext(context.Background())
 	for i := 0; i < numCPU; i++ {
 		index := i
 		start := unit * i
@@ -34,7 +35,7 @@ func (d *Downloader) Start() error {
 			end = size
 		}
 		eg.Go(func() error {
-			return d.rangeAccess(data, index, start, end)
+			return d.rangeAccess(ctx, data, index, start, end)
 		})
 	}
 
@@ -62,28 +63,45 @@ func (d *Downloader) head() (int, error) {
 	return int(headResp.ContentLength), nil
 }
 
-func (d *Downloader) rangeAccess(data *Data, index, start, end int) error {
+func (d *Downloader) rangeAccess(ctx context.Context, data *data, index, start, end int) error {
 	client := &http.Client{}
 	req, err := http.NewRequest("GET", d.URL, nil)
 	if err != nil {
 		return err
 	}
+	req = req.WithContext(ctx)
 
 	rangeBytes := "bytes=" + strconv.Itoa(start) + "-" + strconv.Itoa(end)
 	req.Header.Add("Range", rangeBytes)
 
-	resp, err := client.Do(req)
-	if err != nil {
+	ch := make(chan *partialData)
+	errCh := make(chan error)
+
+	go func() {
+		resp, err := client.Do(req)
+		if err != nil {
+			errCh <- err
+		}
+		defer resp.Body.Close()
+		p, err := ioutil.ReadAll(resp.Body)
+		if err != nil {
+			errCh <- err
+		}
+		ch <- &partialData{
+			data:  p,
+			index: index,
+		}
+	}()
+
+	select {
+	case partialData := <-ch:
+		data.setPartialData(partialData)
+		return nil
+
+	case err := <-errCh:
 		return err
+
+	case <-ctx.Done():
+		return ctx.Err()
 	}
-	defer resp.Body.Close()
-
-	p, err := ioutil.ReadAll(resp.Body)
-	if err != nil {
-		return err
-	}
-
-	data.setPartialData(index, p)
-
-	return nil
 }
